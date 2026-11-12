@@ -1,0 +1,11 @@
+flask
+pandas
+openpyxl
+python-docx
+PyMuPDF
+Pillow
+reportlab
+pywin32
+opencv-python
+rembg
+onnxruntime
