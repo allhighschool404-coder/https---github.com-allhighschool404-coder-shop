@@ -20,6 +20,10 @@ from reportlab.lib import colors
 
 app = Flask(__name__)
 
+@app.route('/healthz')
+def healthz():
+    return jsonify({'status': 'ok'}), 200
+
 SUPPORTED_EXTENSIONS = [
     '.jpeg', '.jpg', '.png', '.webp', '.svg', '.gif', '.psd',
     '.ai', '.eps', '.pdf', '.doc', '.docx', '.txt', '.rtf',
