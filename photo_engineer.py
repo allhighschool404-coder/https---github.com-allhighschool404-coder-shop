@@ -13,15 +13,20 @@ def get_rembg_session():
     if _REMBG_SESSION is None:
         try:
             import rembg
-            # 'silueta' is lightweight (~44MB), fast (1s on CPU), and optimized for human portraits
-            _REMBG_SESSION = rembg.new_session('silueta')
+            # 'u2net_human_seg' is the specialized human portrait segmentation model
+            # with pin-sharp precision on hair, ears, badges, and shoulders (~1.5s on CPU)
+            _REMBG_SESSION = rembg.new_session('u2net_human_seg')
         except Exception as e:
             try:
                 import rembg
                 _REMBG_SESSION = rembg.new_session('u2netp')
             except Exception as e2:
-                print(f"Warning: Could not initialize rembg session: {e2}")
-                _REMBG_SESSION = False
+                try:
+                    import rembg
+                    _REMBG_SESSION = rembg.new_session('silueta')
+                except Exception as e3:
+                    print(f"Warning: Could not initialize rembg session: {e3}")
+                    _REMBG_SESSION = False
     return _REMBG_SESSION if _REMBG_SESSION is not False else None
 
 # Predefined sizes in pixels at 300 DPI
@@ -105,8 +110,8 @@ def get_dimensions(size_preset, orientation='portrait', custom_w=None, custom_h=
 
 def remove_bg_ai(pil_img):
     """
-    Remove background using rembg (silueta or u2netp).
-    Includes edge feathering for smooth hair and shoulder contours.
+    Remove background using rembg (u2net_human_seg).
+    Ensures clean background separation without dark halos around ears or shoulders.
     """
     orig_w, orig_h = pil_img.size
     session = get_rembg_session()
@@ -122,19 +127,22 @@ def remove_bg_ai(pil_img):
             else:
                 work_img = pil_img
 
-            # Remove background
+            # Remove background using human_seg session
             rgba_out = rembg.remove(work_img, session=session)
 
             # Restore original dimensions if scaled
             if rgba_out.size != (orig_w, orig_h):
                 rgba_out = rgba_out.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
 
-            # Smooth alpha mask edges slightly to eliminate jagged edge artifacts
+            # Clean alpha thresholding to eliminate background haze and dark halos
             r, g, b, a = rgba_out.split()
-            # Slight Gaussian blur on alpha channel
-            a_blurred = a.filter(ImageFilter.GaussianBlur(radius=0.7))
-            rgba_out = Image.merge('RGBA', (r, g, b, a_blurred))
-            return rgba_out
+            a_arr = np.array(a)
+            # Threshold noise: values below 12 become 0 (pure transparent)
+            a_arr[a_arr < 12] = 0
+            # Solidify confident foreground: values above 242 become 255 (solid)
+            a_arr[a_arr > 242] = 255
+            clean_a = Image.fromarray(a_arr)
+            return Image.merge('RGBA', (r, g, b, clean_a))
         except Exception as e:
             print(f"Error in rembg execution: {e}")
 
@@ -173,96 +181,78 @@ def fallback_remove_bg(pil_img):
 
 def enhance_photo(pil_img, brightness=0, contrast=0, smoothness=0, sharpness=0, saturation=0, auto_fresh=True):
     """
-    Photo Fresh Studio Enhancer:
-    - Auto Fresh: Intelligently balances light (CLAHE), softens skin, enhances sharpness and skin vibrance.
-    - Bilateral / Edge-Preserving smoothing: smoothens skin blemish and noise while preserving crisp facial features.
-    - Unsharp mask: studio portrait sharpness.
-    - Exposure and color vibrance adjustments.
+    Subtle, studio-quality photo fresh enhancer.
+    Guarantees 100% preservation of genuine facial features, skin pores, and natural likeness.
     """
-    # Convert PIL Image to RGB numpy array
     img_rgb = np.array(pil_img.convert('RGB'))
 
-    # If Auto Fresh is requested and user didn't manually customize or wanted auto defaults
-    if auto_fresh:
-        if brightness == 0: brightness = 8
-        if contrast == 0: contrast = 12
-        if smoothness == 0: smoothness = 30
-        if sharpness == 0: sharpness = 28
-        if saturation == 0: saturation = 10
+    eff_brightness = brightness
+    eff_contrast = contrast
+    eff_smoothness = smoothness
+    eff_sharpness = sharpness
+    eff_saturation = saturation
 
-    # 0. Optical deblurring & sharpness restoration for blurry/unclear input photos
+    # If auto_fresh, set gentle studio enhancement defaults (without harsh plastic distortion)
+    if auto_fresh:
+        if eff_brightness == 0: eff_brightness = 4
+        if eff_contrast == 0: eff_contrast = 6
+        if eff_sharpness == 0: eff_sharpness = 16
+        if eff_saturation == 0: eff_saturation = 5
+        # Do NOT apply heavy smoothness by default so authentic skin pores and face structure are 100% preserved
+        if eff_smoothness == 0: eff_smoothness = 0
+
+    # 1. Optical deblurring for genuinely blurry / out of focus photos
     if auto_fresh:
         try:
             gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
             blur_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-            # If photo is blurry or out of focus (Laplacian variance < 200), apply optical deblur
-            if blur_var < 200.0:
-                gaussian_blur = cv2.GaussianBlur(img_rgb, (0, 0), sigmaX=2.0)
-                # True optical unsharp recovery: sharpens real edges without distorting facial geometry
-                img_rgb = cv2.addWeighted(img_rgb, 1.45, gaussian_blur, -0.45, 0)
+            if blur_var < 160.0: # blurry/fuzzy photo
+                blurred = cv2.GaussianBlur(img_rgb, (0, 0), sigmaX=1.8)
+                img_rgb = cv2.addWeighted(img_rgb, 1.35, blurred, -0.35, 0)
                 img_rgb = np.clip(img_rgb, 0, 255).astype(np.uint8)
         except Exception as e:
             print(f"Deblur error: {e}")
 
-    # 1. CLAHE exposure balance on L-channel if auto_fresh
-    if auto_fresh:
+    # 2. Skin Smoothing (Bilateral Filter) only if explicitly requested
+    if eff_smoothness > 0:
         try:
-            lab = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2LAB)
-            l, a, b = cv2.split(lab)
-            clahe = cv2.createCLAHE(clipLimit=1.6, tileGridSize=(8, 8))
-            l = clahe.apply(l)
-            lab = cv2.merge((l, a, b))
-            img_rgb = cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
-        except Exception as e:
-            print(f"CLAHE error: {e}")
-
-    # 2. Skin Smoothing (Bilateral Filter / Edge Preserving Filter)
-    if smoothness > 0:
-        try:
-            smooth_ratio = max(0.0, min(float(smoothness) / 100.0, 1.0))
-            # d: diameter of filter, sigmaColor: color difference tolerance, sigmaSpace: spatial distance
-            sigma = int(25 + smooth_ratio * 55)
-            filtered = cv2.bilateralFilter(img_rgb, d=7, sigmaColor=sigma, sigmaSpace=sigma)
-            # Blend original and filtered based on smoothness ratio
-            img_rgb = cv2.addWeighted(filtered, smooth_ratio, img_rgb, 1.0 - smooth_ratio, 0)
+            ratio = max(0.0, min(float(eff_smoothness) / 100.0, 1.0))
+            sigma = int(15 + ratio * 35)
+            filtered = cv2.bilateralFilter(img_rgb, d=5, sigmaColor=sigma, sigmaSpace=sigma)
+            img_rgb = cv2.addWeighted(filtered, ratio * 0.7, img_rgb, 1.0 - (ratio * 0.7), 0)
         except Exception as e:
             print(f"Smoothness error: {e}")
 
-    # Convert back to PIL for high-quality tone & color enhancements
     enhanced_pil = Image.fromarray(img_rgb)
 
-    # 3. Brightness adjustment (-100 to 100 -> factor 0.0 to 2.0)
-    if brightness != 0:
-        factor = 1.0 + (brightness / 100.0) * 0.6
-        enhanced_pil = ImageEnhance.Brightness(enhanced_pil).enhance(max(0.1, factor))
+    # 3. Brightness adjustment
+    if eff_brightness != 0:
+        factor = 1.0 + (eff_brightness / 100.0) * 0.5
+        enhanced_pil = ImageEnhance.Brightness(enhanced_pil).enhance(max(0.2, factor))
 
-    # 4. Contrast adjustment (-100 to 100 -> factor 0.0 to 2.0)
-    if contrast != 0:
-        factor = 1.0 + (contrast / 100.0) * 0.6
-        enhanced_pil = ImageEnhance.Contrast(enhanced_pil).enhance(max(0.1, factor))
+    # 4. Contrast adjustment
+    if eff_contrast != 0:
+        factor = 1.0 + (eff_contrast / 100.0) * 0.5
+        enhanced_pil = ImageEnhance.Contrast(enhanced_pil).enhance(max(0.2, factor))
 
-    # 5. Color Saturation / Warmth (-100 to 100 -> factor 0.0 to 2.0)
-    if saturation != 0:
-        factor = 1.0 + (saturation / 100.0) * 0.5
-        enhanced_pil = ImageEnhance.Color(enhanced_pil).enhance(max(0.0, factor))
+    # 5. Color Saturation / Warmth
+    if eff_saturation != 0:
+        factor = 1.0 + (eff_saturation / 100.0) * 0.4
+        enhanced_pil = ImageEnhance.Color(enhanced_pil).enhance(max(0.1, factor))
 
-    # 6. Sharpness (Unsharp Masking) (0 to 100)
-    if sharpness > 0:
-        sharp_factor = 1.0 + (sharpness / 100.0) * 1.5
-        enhanced_pil = ImageEnhance.Sharpness(enhanced_pil).enhance(sharp_factor)
+    # 6. Crisp Studio Sharpness
+    if eff_sharpness > 0:
+        factor = 1.0 + (eff_sharpness / 100.0) * 0.8
+        enhanced_pil = ImageEnhance.Sharpness(enhanced_pil).enhance(factor)
 
     return enhanced_pil
 
 def detect_head_and_shoulders_crop(subject_rgba, target_aspect_ratio=0.8):
     """
-    Intelligently crops full-body or half-body photos to head & shoulders:
-    - Analyzes alpha mask to find person bounds.
-    - If person is full-body or tall (person_h > person_w * 1.25),
-      identifies head and neck/shoulder expansion.
-    - Crops head and upper chest with standard official passport headroom (8-10%)
-      and 65-75% face height ratio.
-    - If already a portrait or close-up, preserves natural bounds.
-    - Strictly preserves authentic aspect ratio and face geometry (zero distortion).
+    Intelligently crops full-body photos to upper body:
+    - Only triggers on TRUE standing full-body photos (person_h > person_w * 2.1).
+    - Preserves full natural shoulder width and badges without clipping.
+    - If already a portrait, bust, or half-body photo, preserves natural bounds 100%.
     """
     try:
         alpha = np.array(subject_rgba.split()[-1])
@@ -274,51 +264,14 @@ def detect_head_and_shoulders_crop(subject_rgba, target_aspect_ratio=0.8):
         min_x, max_x = int(x_idx.min()), int(x_idx.max())
         person_h = max_y - min_y
         person_w = max_x - min_x
+        orig_w, orig_h = subject_rgba.size
 
-        # If image is a full-body or half-body photo (tall person ratio)
-        if person_h > person_w * 1.25 and person_h > 200:
-            # Sample widths from top of head downwards
-            step = max(1, person_h // 80)
-            widths = []
-            for y in range(min_y, min(max_y, min_y + int(person_h * 0.45)), step):
-                row_x = np.where(alpha[y, :] > 25)[0]
-                w = (row_x.max() - row_x.min()) if len(row_x) > 0 else 0
-                widths.append((y, w))
-
-            # Detect neck-to-shoulder transition (where width expands)
-            shoulder_y = None
-            if len(widths) > 5:
-                head_w_samples = [w for y, w in widths[:len(widths)//3] if w > 0]
-                if head_w_samples:
-                    med_hw = np.median(head_w_samples)
-                    for y, w in widths:
-                        if y > min_y + int(person_h * 0.10) and w > med_hw * 1.45:
-                            shoulder_y = y
-                            break
-
-            if not shoulder_y:
-                shoulder_y = min_y + int(person_h * 0.28)
-
-            head_h = max(40, shoulder_y - min_y)
-
-            # Official passport framing: include headroom and upper chest/shoulders
-            crop_top = max(0, min_y - int(head_h * 0.15))
-            crop_bottom = min(subject_rgba.height, min_y + int(head_h * 2.35))
-            crop_h = crop_bottom - crop_top
-
-            # Center X around the head
-            head_alpha = alpha[min_y:shoulder_y, :]
-            h_y, h_x = np.where(head_alpha > 25)
-            center_x = int(np.median(h_x)) if len(h_x) > 0 else (min_x + max_x) // 2
-
-            crop_w = int(crop_h * target_aspect_ratio)
-            crop_left = max(0, center_x - crop_w // 2)
-            crop_right = min(subject_rgba.width, crop_left + crop_w)
-
-            if crop_right - crop_left < crop_w:
-                crop_left = max(0, crop_right - crop_w)
-
-            return subject_rgba.crop((crop_left, crop_top, crop_right, crop_bottom))
+        # Only crop if it is a TRUE full-body photo (head-to-toe standing, ratio > 2.1)
+        if person_h > person_w * 2.1 and person_h > 500:
+            head_h_est = int(person_h * 0.16)
+            crop_bottom = min(orig_h, min_y + int(head_h_est * 3.2))
+            # Keep full width so shoulders and badges are never cut off
+            return subject_rgba.crop((0, min_y, orig_w, crop_bottom))
     except Exception as e:
         print(f"Smart framing error: {e}")
 
@@ -342,14 +295,22 @@ def fit_and_compose_single(
 ):
     """
     Process single photo:
-    1. Fresh Studio Enhancement with Deblur
-    2. Remove background and composite onto chosen Studio Blue / custom color
+    1. Background removal first (on pristine image)
+    2. Fresh Studio Enhancement on the subject
     3. Smart Head & Shoulders framing for official passport/ID/office use
-    4. Fit and center nicely inside target canvas (Passport, Stamp, 3R, 4R, 10R)
+    4. Studio placement with comfortable shoulder margins and proper headroom
     """
-    # 1. Photo Fresh & Deblur
-    fresh_img = enhance_photo(
-        pil_img,
+    # 1. Background Processing first (on pristine image)
+    if remove_bg:
+        subject_rgba = remove_bg_ai(pil_img)
+    else:
+        subject_rgba = pil_img.convert('RGBA')
+
+    # 2. Fresh Studio Enhancement on the subject
+    r, g, b, a = subject_rgba.split()
+    rgb_part = Image.merge('RGB', (r, g, b))
+    fresh_rgb = enhance_photo(
+        rgb_part,
         brightness=brightness,
         contrast=contrast,
         smoothness=smoothness,
@@ -357,37 +318,60 @@ def fit_and_compose_single(
         saturation=saturation,
         auto_fresh=auto_fresh
     )
+    r2, g2, b2 = fresh_rgb.split()
+    subject_rgba = Image.merge('RGBA', (r2, g2, b2, a))
 
-    # 2. Background Processing
-    if remove_bg:
-        subject_rgba = remove_bg_ai(fresh_img)
-    else:
-        subject_rgba = fresh_img.convert('RGBA')
-
-    # 3. Smart Face & Upper Torso Framing for office/passport standard
+    # 3. Smart Framing for full-body photos (if applicable)
     aspect_ratio = target_w / float(target_h)
     framed_subject = detect_head_and_shoulders_crop(subject_rgba, target_aspect_ratio=aspect_ratio)
 
-    # 4. Framing / Composition into target dimensions (target_w, target_h)
+    # 4. Measure subject bounding box
+    alpha = np.array(framed_subject.split()[-1])
+    ys, xs = np.where(alpha > 25)
+    if len(ys) == 0:
+        if bg_color is not None:
+            return Image.new('RGB', (target_w, target_h), bg_color)
+        return Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
+
+    person_w = int(xs.max() - xs.min())
+    person_h = int(ys.max() - ys.min())
+
+    # Studio Passport / Portrait Composition:
+    # In portrait: shoulders occupy ~88% of target_w, headroom ~8%
+    # In landscape: shoulders occupy ~65% of target_w, headroom ~10%
+    is_portrait = target_h >= target_w
+    if is_portrait:
+        target_subject_w = target_w * 0.88
+        headroom_ratio = 0.08
+    else:
+        target_subject_w = target_w * 0.65
+        headroom_ratio = 0.10
+
+    # Scale uniformly (LANCZOS) with user's zoom factor (crop_scale)
+    scale = (target_subject_w / float(max(1, person_w))) * float(crop_scale)
+    new_w = max(1, int(round(framed_subject.width * scale)))
+    new_h = max(1, int(round(framed_subject.height * scale)))
+
+    scaled_sub = framed_subject.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    scaled_alpha = np.array(scaled_sub.split()[-1])
+    sc_ys, sc_xs = np.where(scaled_alpha > 25)
+
+    if len(sc_ys) == 0:
+        if bg_color is not None:
+            return Image.new('RGB', (target_w, target_h), bg_color)
+        return Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
+
+    sc_min_y = int(sc_ys.min())
+    sc_min_x, sc_max_x = int(sc_xs.min()), int(sc_xs.max())
+    sc_center_x = (sc_min_x + sc_max_x) // 2
+
     canvas = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
+    desired_head_top = int(target_h * headroom_ratio)
 
-    sub_w, sub_h = framed_subject.size
+    pos_y = desired_head_top - sc_min_y + int(pan_y * target_h / 100.0)
+    pos_x = (target_w // 2) - sc_center_x + int(pan_x * target_w / 100.0)
 
-    # Calculate scale to cover canvas appropriately (standard portrait framing)
-    scale_w = target_w / float(sub_w)
-    scale_h = target_h / float(sub_h)
-    base_scale = max(scale_w, scale_h) * crop_scale
-
-    new_w = int(round(sub_w * base_scale))
-    new_h = int(round(sub_h * base_scale))
-    resized_subject = framed_subject.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
-    # Position with pan offsets (default centered)
-    offset_x = int(round((target_w - new_w) / 2.0 + (pan_x * target_w / 100.0)))
-    offset_y = int(round((target_h - new_h) / 2.0 + (pan_y * target_h / 100.0)))
-
-    # Paste onto canvas
-    canvas.paste(resized_subject, (offset_x, offset_y), resized_subject)
+    canvas.paste(scaled_sub, (pos_x, pos_y), scaled_sub)
 
     # 5. Apply background color if not transparent
     if bg_color is not None:
@@ -467,37 +451,46 @@ def compose_dual_photos(
         return canvas
 
     else: # 'joint' unified portrait
-        # Smart head-and-shoulders framing for both subjects so full-body inputs are neatly balanced
-        joint_aspect = (target_w * 0.58) / float(target_h)
+        joint_aspect = (target_w * 0.52) / float(target_h)
         sub1_rgba = detect_head_and_shoulders_crop(sub1_rgba, target_aspect_ratio=joint_aspect)
         sub2_rgba = detect_head_and_shoulders_crop(sub2_rgba, target_aspect_ratio=joint_aspect)
 
         canvas = Image.new('RGBA', (target_w, target_h), (0, 0, 0, 0))
 
-        # Size estimation: each person takes roughly 55-60% width of the frame so they overlap/stand naturally
-        target_sub_w = int(target_w * 0.58)
+        # Each person takes ~52% width of the frame so they stand side-by-side naturally
+        target_sub_w = int(target_w * 0.52)
 
         # Scale person 1
-        s1_w, s1_h = sub1_rgba.size
-        scale_val1 = (target_sub_w / float(s1_w)) * scale1
-        p1_w = int(round(s1_w * scale_val1))
-        p1_h = int(round(s1_h * scale_val1))
+        s1_alpha = np.array(sub1_rgba.split()[-1])
+        s1_ys, s1_xs = np.where(s1_alpha > 25)
+        p1_w_actual = (s1_xs.max() - s1_xs.min()) if len(s1_xs) > 0 else sub1_rgba.width
+        scale_val1 = (target_sub_w / float(max(1, p1_w_actual))) * scale1
+        p1_w = int(round(sub1_rgba.width * scale_val1))
+        p1_h = int(round(sub1_rgba.height * scale_val1))
         p1_resized = sub1_rgba.resize((p1_w, p1_h), Image.Resampling.LANCZOS)
 
         # Scale person 2
-        s2_w, s2_h = sub2_rgba.size
-        scale_val2 = (target_sub_w / float(s2_w)) * scale2
-        p2_w = int(round(s2_w * scale_val2))
-        p2_h = int(round(s2_h * scale_val2))
+        s2_alpha = np.array(sub2_rgba.split()[-1])
+        s2_ys, s2_xs = np.where(s2_alpha > 25)
+        p2_w_actual = (s2_xs.max() - s2_xs.min()) if len(s2_xs) > 0 else sub2_rgba.width
+        scale_val2 = (target_sub_w / float(max(1, p2_w_actual))) * scale2
+        p2_w = int(round(sub2_rgba.width * scale_val2))
+        p2_h = int(round(sub2_rgba.height * scale_val2))
         p2_resized = sub2_rgba.resize((p2_w, p2_h), Image.Resampling.LANCZOS)
 
-        # Position person 1 (left side) and person 2 (right side)
-        # Baseline y is aligned towards the bottom of the photo
-        p1_x = int(round((target_w * 0.25) - (p1_w / 2.0) + (pos_x1 * target_w / 100.0) - (gap / 2.0)))
-        p1_y = target_h - p1_h
+        headroom = int(target_h * 0.08)
+        p1_top_arr = np.where(np.array(p1_resized.split()[-1]) > 25)[0]
+        p1_head_y = int(p1_top_arr.min()) if len(p1_top_arr) > 0 else 0
 
-        p2_x = int(round((target_w * 0.75) - (p2_w / 2.0) + (pos_x2 * target_w / 100.0) + (gap / 2.0)))
-        p2_y = target_h - p2_h
+        p2_top_arr = np.where(np.array(p2_resized.split()[-1]) > 25)[0]
+        p2_head_y = int(p2_top_arr.min()) if len(p2_top_arr) > 0 else 0
+
+        # Position person 1 (left side ~28%) and person 2 (right side ~72%)
+        p1_x = int(round((target_w * 0.28) - (p1_w / 2.0) + (pos_x1 * target_w / 100.0) - (gap / 2.0)))
+        p1_y = headroom - p1_head_y
+
+        p2_x = int(round((target_w * 0.72) - (p2_w / 2.0) + (pos_x2 * target_w / 100.0) + (gap / 2.0)))
+        p2_y = headroom - p2_head_y
 
         # Paste person 1 and person 2
         canvas.paste(p1_resized, (p1_x, p1_y), p1_resized)

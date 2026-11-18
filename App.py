@@ -1275,12 +1275,14 @@ def admin_login():
         user_id = str(data.get('user_id', '')).strip()
         password = str(data.get('password', '')).strip()
 
-        # User Id: Danam, Password: Danam
-        if user_id.lower() == 'danam' and password == 'Danam':
+        admin_user = os.environ.get('ADMIN_USER', 'Danam')
+        admin_password = os.environ.get('ADMIN_PASSWORD', 'Danam')
+
+        if user_id == admin_user and password == admin_password:
             return jsonify({
                 'success': True,
                 'message': 'সফলভাবে লগইন হয়েছে!',
-                'user': 'Danam',
+                'user': admin_user,
                 'role': 'Admin'
             })
         else:
@@ -1374,4 +1376,5 @@ def admin_test_gemini_key():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.environ.get('PORT', '5000'))
+    app.run(host='0.0.0.0', port=port, debug=False)
