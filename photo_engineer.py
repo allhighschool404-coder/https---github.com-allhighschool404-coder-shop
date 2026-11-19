@@ -15,8 +15,14 @@ def get_rembg_session():
         model_name = os.getenv('REMBG_MODEL', 'u2netp')
         try:
             import rembg
-            # 'u2netp' is the lightweight (4.7MB), ultra-fast model ideal for Render free tier (512MB RAM)
-            _REMBG_SESSION = rembg.new_session(model_name)
+            import onnxruntime
+            # Memory-safe session options for Render free tier (512MB RAM)
+            sess_opts = onnxruntime.SessionOptions()
+            sess_opts.intra_op_num_threads = 2
+            sess_opts.inter_op_num_threads = 1
+            sess_opts.execution_mode = onnxruntime.ExecutionMode.ORT_SEQUENTIAL
+            sess_opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_BASIC
+            _REMBG_SESSION = rembg.new_session(model_name, sess_opts=sess_opts)
         except Exception as e:
             try:
                 import rembg
@@ -111,7 +117,7 @@ def get_dimensions(size_preset, orientation='portrait', custom_w=None, custom_h=
 
 def remove_bg_ai(pil_img):
     """
-    Remove background using rembg (u2net_human_seg).
+    Remove background using rembg (u2netp) with memory guard for Render (512MB RAM).
     Ensures clean background separation without dark halos around ears or shoulders.
     """
     orig_w, orig_h = pil_img.size
@@ -120,43 +126,55 @@ def remove_bg_ai(pil_img):
     if session is not None:
         try:
             import rembg
-            # Downsample temporarily if image is gigantic for speed
+            # Downsample for rembg inference (u2net operates at 320x320 internally)
+            # Max 720px ensures razor-sharp mask while keeping memory usage under 35MB
             max_dim = max(orig_w, orig_h)
-            if max_dim > 1600:
-                scale = 1600.0 / max_dim
-                work_img = pil_img.resize((int(round(orig_w * scale)), int(round(orig_h * scale))), Image.Resampling.LANCZOS)
+            if max_dim > 720:
+                scale = 720.0 / max_dim
+                work_img = pil_img.resize((int(round(orig_w * scale)), int(round(orig_h * scale))), Image.Resampling.BILINEAR)
             else:
                 work_img = pil_img
 
-            # Remove background using human_seg session
             rgba_out = rembg.remove(work_img, session=session)
 
-            # Restore original dimensions if scaled
+            # Restore original dimensions for the alpha mask with high quality LANCZOS
             if rgba_out.size != (orig_w, orig_h):
-                rgba_out = rgba_out.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
+                alpha_channel = rgba_out.split()[-1].resize((orig_w, orig_h), Image.Resampling.LANCZOS)
+                r, g, b = pil_img.convert('RGB').split()
+            else:
+                r, g, b, alpha_channel = rgba_out.split()
 
             # Clean alpha thresholding to eliminate background haze and dark halos
-            r, g, b, a = rgba_out.split()
-            a_arr = np.array(a)
-            # Threshold noise: values below 12 become 0 (pure transparent)
+            a_arr = np.array(alpha_channel)
             a_arr[a_arr < 12] = 0
-            # Solidify confident foreground: values above 242 become 255 (solid)
             a_arr[a_arr > 242] = 255
             clean_a = Image.fromarray(a_arr)
+
+            del rgba_out, a_arr
+            import gc; gc.collect()
+
             return Image.merge('RGBA', (r, g, b, clean_a))
         except Exception as e:
             print(f"Error in rembg execution: {e}")
 
-    # Fallback if rembg is not available or failed: Smart GrabCut / skin segmentation fallback
+    # Fallback if rembg is not available or failed: Smart GrabCut
     return fallback_remove_bg(pil_img)
 
 def fallback_remove_bg(pil_img):
     """
-    OpenCV GrabCut fallback for background removal.
+    OpenCV GrabCut fallback with downscaling for speed & RAM safety.
     Assumes center rectangular region is the subject.
     """
     try:
-        cv_img = cv2.cvtColor(np.array(pil_img.convert('RGB')), cv2.COLOR_RGB2BGR)
+        orig_w, orig_h = pil_img.size
+        max_dim = max(orig_w, orig_h)
+        if max_dim > 600:
+            scale = 600.0 / max_dim
+            small_img = pil_img.resize((int(round(orig_w * scale)), int(round(orig_h * scale))), Image.Resampling.BILINEAR)
+        else:
+            small_img = pil_img
+
+        cv_img = cv2.cvtColor(np.array(small_img.convert('RGB')), cv2.COLOR_RGB2BGR)
         h, w = cv_img.shape[:2]
         
         mask = np.zeros((h, w), np.uint8)
@@ -167,14 +185,11 @@ def fallback_remove_bg(pil_img):
         rect = (int(w * 0.05), int(h * 0.05), int(w * 0.90), int(h * 0.90))
         cv2.grabCut(cv_img, mask, rect, bgdModel, fgdModel, 3, cv2.GC_INIT_WITH_RECT)
         
-        mask2 = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
-        # Soften mask
-        mask2 = (mask2 * 255).astype(np.uint8)
+        mask2 = np.where((mask == 2) | (mask == 0), 0, 255).astype(np.uint8)
         mask2 = cv2.GaussianBlur(mask2, (5, 5), 0)
         
-        rgba = pil_img.convert('RGBA')
-        r, g, b, _ = rgba.split()
-        alpha = Image.fromarray(mask2)
+        alpha = Image.fromarray(mask2).resize((orig_w, orig_h), Image.Resampling.LANCZOS)
+        r, g, b = pil_img.convert('RGB').split()
         return Image.merge('RGBA', (r, g, b, alpha))
     except Exception as e:
         print(f"GrabCut fallback failed: {e}")

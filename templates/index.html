@@ -3443,34 +3443,54 @@ The generated output must strictly follow the provided JSON schema. Ensure bangl
 
             const reader = new FileReader();
             reader.onload = function(e) {
-                const b64 = e.target.result;
-                if (slot === 1) {
-                    peState.file1 = file;
-                    peState.file1B64 = b64;
-                    // Update single preview thumbnail
-                    document.getElementById('peDropContent1').classList.add('hidden');
-                    document.getElementById('peThumbBox1').classList.remove('hidden');
-                    document.getElementById('peThumbImg1').src = b64;
-                    document.getElementById('peThumbName1').innerText = file.name;
-                    document.getElementById('peThumbSize1').innerText = (file.size / (1024 * 1024)).toFixed(2) + ' MB';
+                const rawB64 = e.target.result;
+                const img = new Image();
+                img.onload = function() {
+                    const maxDim = 1200;
+                    let w = img.width;
+                    let h = img.height;
+                    let finalB64 = rawB64;
 
-                    // Update dual preview thumbnail 1
-                    document.getElementById('peDualDropContent1').classList.add('hidden');
-                    document.getElementById('peDualThumbBox1').classList.remove('hidden');
-                    document.getElementById('peDualThumbImg1').src = b64;
-                    document.getElementById('peDualThumbName1').innerText = file.name;
+                    if (w > maxDim || h > maxDim) {
+                        const canvas = document.createElement('canvas');
+                        if (w > h) {
+                            h = Math.round((h * maxDim) / w);
+                            w = maxDim;
+                        } else {
+                            w = Math.round((w * maxDim) / h);
+                            h = maxDim;
+                        }
+                        canvas.width = w;
+                        canvas.height = h;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, w, h);
+                        finalB64 = canvas.toDataURL('image/jpeg', 0.92);
+                    }
 
-                    // Set compare original image
-                    document.getElementById('peOriginalCompareImg').src = b64;
-                } else if (slot === 2) {
-                    peState.file2 = file;
-                    peState.file2B64 = b64;
-                    // Update dual preview thumbnail 2
-                    document.getElementById('peDualDropContent2').classList.add('hidden');
-                    document.getElementById('peDualThumbBox2').classList.remove('hidden');
-                    document.getElementById('peDualThumbImg2').src = b64;
-                    document.getElementById('peDualThumbName2').innerText = file.name;
-                }
+                    if (slot === 1) {
+                        peState.file1 = file;
+                        peState.file1B64 = finalB64;
+                        document.getElementById('peDropContent1').classList.add('hidden');
+                        document.getElementById('peThumbBox1').classList.remove('hidden');
+                        document.getElementById('peThumbImg1').src = finalB64;
+                        document.getElementById('peThumbName1').innerText = file.name;
+                        document.getElementById('peThumbSize1').innerText = (file.size / (1024 * 1024)).toFixed(2) + ' MB';
+
+                        document.getElementById('peDualDropContent1').classList.add('hidden');
+                        document.getElementById('peDualThumbBox1').classList.remove('hidden');
+                        document.getElementById('peDualThumbImg1').src = finalB64;
+                        document.getElementById('peDualThumbName1').innerText = file.name;
+                        document.getElementById('peOriginalCompareImg').src = finalB64;
+                    } else if (slot === 2) {
+                        peState.file2 = file;
+                        peState.file2B64 = finalB64;
+                        document.getElementById('peDualDropContent2').classList.add('hidden');
+                        document.getElementById('peDualThumbBox2').classList.remove('hidden');
+                        document.getElementById('peDualThumbImg2').src = finalB64;
+                        document.getElementById('peDualThumbName2').innerText = file.name;
+                    }
+                };
+                img.src = rawB64;
             };
             reader.readAsDataURL(file);
         }

@@ -1075,6 +1075,18 @@ def process_photo_engineering():
         if img2 is not None:
             img2 = ImageOps.exif_transpose(img2)
 
+        # Downscale large camera photos immediately to protect Render RAM (512MB limit)
+        max_in_dim = max(img1.width, img1.height)
+        if max_in_dim > 1200:
+            scale_in = 1200.0 / max_in_dim
+            img1 = img1.resize((int(round(img1.width * scale_in)), int(round(img1.height * scale_in))), Image.Resampling.LANCZOS)
+
+        if img2 is not None:
+            max_in_dim2 = max(img2.width, img2.height)
+            if max_in_dim2 > 1200:
+                scale_in2 = 1200.0 / max_in_dim2
+                img2 = img2.resize((int(round(img2.width * scale_in2)), int(round(img2.height * scale_in2))), Image.Resampling.LANCZOS)
+
         # Calculate dimensions in pixels at 300 DPI
         w_px, h_px = photo_engineer.get_dimensions(
             size_preset=size_preset,
