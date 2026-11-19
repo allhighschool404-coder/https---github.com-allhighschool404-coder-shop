@@ -1341,35 +1341,88 @@ def admin_settings():
 def admin_test_gemini_key():
     try:
         data = request.json or {}
-        api_key = data.get('api_key', '').strip()
+        api_key = str(data.get('api_key', '')).strip().strip('"').strip("'").strip()
         if not api_key:
             return jsonify({'error': 'এপিআই কী প্রদান করা হয়নি'}), 400
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-        payload = {
-            "contents": [{
-                "parts": [{"text": "Hello, respond with OK."}]
-            }]
-        }
-        resp = requests.post(url, json=payload, timeout=8)
-        if resp.status_code == 200:
-            return jsonify({
-                'success': True,
-                'status': 'valid',
-                'message': '✅ জেমিনি এপিআই কী সক্রিয় ও সফলভাবে কানেক্টেড রয়েছে!'
-            })
-        else:
-            err_msg = 'কী অকার্যকর বা কোটা সীমাবদ্ধ'
-            try:
-                err_data = resp.json()
-                if 'error' in err_data and 'message' in err_data['error']:
-                    err_msg = err_data['error']['message']
-            except Exception:
-                pass
+        # Check for placeholder / mock key
+        if 'MockKeyForTesting' in api_key or 'AIzaSyMock' in api_key:
             return jsonify({
                 'success': False,
                 'status': 'invalid',
-                'error': f"❌ এরর ({resp.status_code}): {err_msg}"
+                'error': '❌ এটি একটি নমুনা কী (Placeholder Mock Key)। অনুগ্রহ করে Google AI Studio (aistudio.google.com) থেকে আপনার নিজস্ব আসল Gemini API Key কপি করে দিন।'
+            }), 400
+
+        # Fast verify via Google Generative Language Models endpoint
+        models_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+        try:
+            m_resp = requests.get(models_url, timeout=7)
+            if m_resp.status_code == 400:
+                err_text = "API Key সঠিক নয় (API_KEY_INVALID)।"
+                try:
+                    edata = m_resp.json()
+                    if 'error' in edata and 'message' in edata['error']:
+                        err_text = edata['error']['message']
+                except Exception:
+                    pass
+                return jsonify({
+                    'success': False,
+                    'status': 'invalid',
+                    'error': f"❌ গুগল এআই এরর (400): {err_text} অনুগ্রহ করে aistudio.google.com থেকে সঠিক কী কপি করে দিন।"
+                }), 400
+            elif m_resp.status_code == 403:
+                return jsonify({
+                    'success': False,
+                    'status': 'invalid',
+                    'error': "❌ অনুমতি অস্বীকৃত (Permission Denied/403)। কী-এর স্ট্যাটাস বা অনুমতি চেক করুন।"
+                }), 400
+        except requests.exceptions.RequestException as net_err:
+            print(f"Models check notice: {net_err}")
+
+        # Test content generation with fallback models
+        models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        last_error_msg = ""
+        success_model = None
+
+        for model_name in models_to_try:
+            try:
+                gen_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+                payload = {
+                    "contents": [{
+                        "parts": [{"text": "Hello, respond with OK."}]
+                    }]
+                }
+                resp = requests.post(gen_url, json=payload, timeout=8)
+                if resp.status_code == 200:
+                    success_model = model_name
+                    break
+                else:
+                    if resp.status_code == 429:
+                        last_error_msg = "কোটা বা রিকোয়েস্ট সীমা শেষ (Quota Exceeded / Rate Limit)"
+                    elif resp.status_code == 404:
+                        last_error_msg = f"মডেল {model_name} পাওয়া যায়নি"
+                    else:
+                        try:
+                            edata = resp.json()
+                            if 'error' in edata and 'message' in edata['error']:
+                                last_error_msg = edata['error']['message']
+                        except Exception:
+                            last_error_msg = f"HTTP {resp.status_code}"
+            except Exception as e:
+                last_error_msg = str(e)
+
+        if success_model:
+            return jsonify({
+                'success': True,
+                'status': 'valid',
+                'model_used': success_model,
+                'message': f'✅ জেমিনি এপিআই কী সক্রিয় এবং গুগলের সাথে সফলভাবে সংযুক্ত ({success_model})!'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'status': 'invalid',
+                'error': f"❌ এরর: {last_error_msg}। অনুগ্রহ করে নতুন কোনো কী দিয়ে চেষ্টা করুন।"
             }), 400
     except Exception as e:
         return jsonify({

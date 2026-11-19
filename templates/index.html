@@ -4136,12 +4136,17 @@ The generated output must strictly follow the provided JSON schema. Ensure bangl
                             adminState.prompts = Object.assign({}, adminState.defaultPrompts, data.settings.prompts);
                         }
                         if (data.settings.gemini_api_keys) {
-                            adminState.keys = data.settings.gemini_api_keys.map((item, idx) => {
-                                if (typeof item === 'string') {
-                                    return { key: item, label: `Key ${idx + 1}`, status: 'untested' };
-                                }
-                                return { key: item.key, label: item.label || `Key ${idx + 1}`, status: 'untested' };
-                            });
+                            adminState.keys = data.settings.gemini_api_keys
+                                .filter(item => {
+                                    const k = typeof item === 'string' ? item : (item && item.key);
+                                    return k && !k.includes('MockKeyForTesting') && !k.includes('AIzaSyMock');
+                                })
+                                .map((item, idx) => {
+                                    if (typeof item === 'string') {
+                                        return { key: item, label: `Key ${idx + 1}`, status: 'untested' };
+                                    }
+                                    return { key: item.key, label: item.label || `Key ${idx + 1}`, status: 'untested' };
+                                });
                         }
                     }
                 }
@@ -4149,7 +4154,24 @@ The generated output must strictly follow the provided JSON schema. Ensure bangl
                 console.log('Using local cached settings:', err);
                 const localKeys = localStorage.getItem('danam_gemini_keys');
                 if (localKeys) {
-                    try { adminState.keys = JSON.parse(localKeys); } catch(e){}
+                    try {
+                        const parsed = JSON.parse(localKeys);
+                        if (Array.isArray(parsed)) {
+                            adminState.keys = parsed.filter(pk => pk && pk.key && !pk.key.includes('MockKeyForTesting') && !pk.key.includes('AIzaSyMock'));
+                        }
+                    } catch(e){}
+                }
+            }
+
+            // If still no keys in list, check if user saved one in Tab 4 / custom_gemini_api_key
+            if (adminState.keys.length === 0) {
+                const legacyKey = localStorage.getItem("custom_gemini_api_key");
+                if (legacyKey && legacyKey.trim() && !legacyKey.includes('MockKey')) {
+                    adminState.keys.push({
+                        key: legacyKey.trim(),
+                        label: 'Gemini Key 1',
+                        status: 'untested'
+                    });
                 }
             }
 
@@ -4169,12 +4191,22 @@ The generated output must strictly follow the provided JSON schema. Ensure bangl
             const statusBadge = document.getElementById('adminKeyPoolStatus');
 
             countBadge.innerText = adminState.keys.length;
-            statusBadge.innerText = `${adminState.keys.length}টি সংরক্ষিত (অটো-রোলেশন সচল)`;
+            const validCount = adminState.keys.filter(k => k.status === 'valid').length;
+            statusBadge.innerText = adminState.keys.length > 0 
+                ? `${adminState.keys.length}টি সংরক্ষিত (${validCount > 0 ? validCount + 'টি সক্রিয়' : 'অটো-রোটেশন সচল'})`
+                : '০টি সংরক্ষিত';
 
             if (adminState.keys.length === 0) {
                 list.innerHTML = `
-                    <div class="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-slate-300 text-slate-400 text-xs">
-                        কোনো Gemini API Key যুক্ত করা নেই। উপরে নতুন কী দিয়ে "কী যুক্ত করুন" বাটনে চাপুন।
+                    <div class="p-6 text-center bg-slate-50 rounded-xl border border-dashed border-indigo-200 text-slate-500 text-xs space-y-2">
+                        <div class="text-2xl">🔑</div>
+                        <div class="font-bold text-slate-700">কোনো Gemini API Key যুক্ত করা নেই</div>
+                        <p>উপরে আপনার গুগল এআই স্টুডিও থেকে পাওয়া কী পেস্ট করে <b>"+ কী যুক্ত করুন"</b> বাটনে চাপুন।</p>
+                        <div>
+                            <a href="https://aistudio.google.com/app/apikey" target="_blank" class="inline-flex items-center gap-1 text-indigo-600 font-semibold hover:underline bg-white px-3 py-1.5 rounded-lg border border-indigo-100 shadow-sm cursor-pointer">
+                                <span>🔗</span> গুগল থেকে ফ্রি Gemini API Key নিন
+                            </a>
+                        </div>
                     </div>
                 `;
                 return;
@@ -4206,10 +4238,14 @@ The generated output must strictly follow the provided JSON schema. Ensure bangl
                                 <div class="font-mono text-xs text-slate-500 mt-0.5 select-all">${masked}</div>
                             </div>
                         </div>
-                        <div class="flex items-center gap-2 self-end sm:self-auto">
+                        <div class="flex items-center gap-2 self-end sm:self-auto flex-wrap">
                             <button type="button" onclick="adminTestApiKey(${idx})"
                                 class="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer">
                                 <span>🧪</span> টেস্ট করুন
+                            </button>
+                            <button type="button" onclick="adminEditApiKey(${idx})"
+                                class="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer">
+                                <span>✏️</span> পরিবর্তন
                             </button>
                             <button type="button" onclick="adminDeleteApiKey(${idx})"
                                 class="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer">
@@ -4223,34 +4259,66 @@ The generated output must strictly follow the provided JSON schema. Ensure bangl
         }
 
         // Add API Key
-        function adminAddApiKey() {
+        async function adminAddApiKey(autoTest = true) {
             const keyInput = document.getElementById('adminNewKeyInput');
             const labelInput = document.getElementById('adminNewKeyLabel');
-            const keyVal = keyInput.value.trim();
-            const labelVal = labelInput.value.trim() || `Gemini Key ${adminState.keys.length + 1}`;
+            let keyVal = (keyInput.value || '').trim().replace(/^['"]+|['"]+$/g, '');
+            const labelVal = (labelInput.value || '').trim() || `Gemini Key ${adminState.keys.length + 1}`;
 
             if (!keyVal) {
                 alert('দয়া করে একটি Gemini API Key পেস্ট করুন!');
                 return;
             }
 
+            if (keyVal.includes('MockKeyForTesting') || keyVal.includes('AIzaSyMock')) {
+                alert('এটি একটি ডামি/নমুনা কী। দয়া করে aistudio.google.com থেকে আপনার আসল এপিআই কী দিন।');
+                return;
+            }
+
+            // Remove any old mock keys
+            adminState.keys = adminState.keys.filter(k => k.key && !k.key.includes('MockKeyForTesting') && !k.key.includes('AIzaSyMock'));
+
             // Check if already exists
-            if (adminState.keys.some(k => k.key === keyVal)) {
+            const existingIdx = adminState.keys.findIndex(k => k.key === keyVal);
+            if (existingIdx !== -1) {
                 alert('এই Gemini API Key ইতিমধ্যে যুক্ত রয়েছে!');
+                if (autoTest) adminTestApiKey(existingIdx);
                 return;
             }
 
             adminState.keys.push({
                 key: keyVal,
                 label: labelVal,
-                status: 'untested'
+                status: 'testing'
             });
 
+            const newIdx = adminState.keys.length - 1;
             keyInput.value = '';
             labelInput.value = '';
 
             renderAdminKeysList();
             adminSaveAllSettings(true);
+
+            if (autoTest) {
+                await adminTestApiKey(newIdx);
+            }
+        }
+
+        // Edit API Key
+        function adminEditApiKey(idx) {
+            const keyObj = adminState.keys[idx];
+            if (!keyObj) return;
+            const updatedKey = prompt('আপনার নতুন বা সঠিক Gemini API Key পেস্ট করুন:', keyObj.key.includes('MockKey') ? '' : keyObj.key);
+            if (updatedKey !== null) {
+                const cleaned = updatedKey.trim().replace(/^['"]+|['"]+$/g, '');
+                if (cleaned) {
+                    keyObj.key = cleaned;
+                    keyObj.status = 'untested';
+                    renderAdminKeysList();
+                    adminSaveAllSettings(true);
+                    adminTestApiKey(idx);
+                }
+            }
         }
 
         // Delete API Key
@@ -4280,7 +4348,7 @@ The generated output must strictly follow the provided JSON schema. Ensure bangl
                 if (res.ok && data.success) {
                     keyObj.status = 'valid';
                     renderAdminKeysList();
-                    customAlert('টেস্ট সফল!', `কী "${keyObj.label}" সক্রিয় এবং গুগলের সাথে সফলভাবে যুক্ত রয়েছে!`);
+                    customAlert('টেস্ট সফল!', `কী "${keyObj.label}" সক্রিয় এবং গুগলের সাথে সফলভাবে যুক্ত রয়েছে!\n(Model: ${data.model_used || 'Gemini 2.5 Flash'})`);
                 } else {
                     keyObj.status = 'invalid';
                     renderAdminKeysList();
@@ -4304,11 +4372,32 @@ The generated output must strictly follow the provided JSON schema. Ensure bangl
 
         // Save All Settings
         async function adminSaveAllSettings(silent = false) {
+            // Auto-capture any key typed into input box if user forgot to click "+ কী যুক্ত করুন"
+            const keyInput = document.getElementById('adminNewKeyInput');
+            if (keyInput && keyInput.value.trim()) {
+                const keyVal = keyInput.value.trim().replace(/^['"]+|['"]+$/g, '');
+                const labelVal = document.getElementById('adminNewKeyLabel')?.value.trim() || `Gemini Key ${adminState.keys.length + 1}`;
+                if (keyVal && !keyVal.includes('MockKeyForTesting') && !adminState.keys.some(k => k.key === keyVal)) {
+                    adminState.keys.push({
+                        key: keyVal,
+                        label: labelVal,
+                        status: 'untested'
+                    });
+                    keyInput.value = '';
+                    const labelEl = document.getElementById('adminNewKeyLabel');
+                    if (labelEl) labelEl.value = '';
+                    renderAdminKeysList();
+                }
+            }
+
             // Read all prompts from textareas
             ['passport', 'fresh', 'joint', 'stamp', 'custom', 'question'].forEach(k => {
                 const el = document.getElementById('promptInput_' + k);
                 if (el) adminState.prompts[k] = el.value.trim();
             });
+
+            // Filter out any mock keys
+            adminState.keys = adminState.keys.filter(k => k.key && !k.key.includes('MockKeyForTesting') && !k.key.includes('AIzaSyMock'));
 
             // Save to localStorage for instant client offline access
             localStorage.setItem('danam_gemini_keys', JSON.stringify(adminState.keys));
@@ -4347,18 +4436,23 @@ The generated output must strictly follow the provided JSON schema. Ensure bangl
 
         // Updated getActiveApiKey() supporting multi-key rotation and failover
         function getActiveApiKey() {
-            // 1. Pick from adminState.keys (prefer valid or untested)
-            if (adminState.keys && adminState.keys.length > 0) {
-                const validObj = adminState.keys.find(k => k.status !== 'invalid');
+            // Filter out any mock keys
+            const realKeys = (adminState.keys || []).filter(k => k.key && !k.key.includes('MockKeyForTesting') && !k.key.includes('AIzaSyMock'));
+
+            // 1. Pick from realKeys (prefer valid or untested)
+            if (realKeys.length > 0) {
+                const validObj = realKeys.find(k => k.status === 'valid');
                 if (validObj) return validObj.key;
-                return adminState.keys[0].key;
+                const untestedObj = realKeys.find(k => k.status !== 'invalid');
+                if (untestedObj) return untestedObj.key;
+                return realKeys[0].key;
             }
 
             // 2. Fallback to localStorage custom_gemini_api_key
             const saved = localStorage.getItem("custom_gemini_api_key");
-            if (saved && saved.trim() !== "") return saved.trim();
+            if (saved && saved.trim() !== "" && !saved.includes('MockKey')) return saved.trim();
 
-            return apiKey || "";
+            return (apiKey && !apiKey.includes('MockKey')) ? apiKey : "";
         }
 
         // Initialize admin state on page load

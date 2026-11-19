@@ -1,10 +1,5 @@
 {
-  "gemini_api_keys": [
-    {
-      "key": "AIzaSyMockKeyForTesting1234567890",
-      "label": "Test Key 1"
-    }
-  ],
+  "gemini_api_keys": [],
   "prompts": {
     "passport": "Enhance This Old Blurry Image Into Ultra High-definition 4k/8k quality.\npreserve The Original Face, Identity, Expression, And All Facial features Exactly As They Are.\ndo Not Alter Or Beautify The Face, Do Not Change Age, Skin Tone, Or Structure.\nsharpen Details, Improve Clarity, Remove Blur, Noise, And Grain while Maintaining Natural Textures.\nrestore Fine Details Like Skin Texture, Hair Strands, Eyes, And Fabric without Over-smoothing.\nimprove Lighting, Contrast, And Dynamic Range Naturally.\nupscale Resolution To Ultra Hd (4k Or 8k) With Crisp Edges And high Detail.\n\n*** Change the background color to cyan. \n\n[Clean up the various spots and irregular marks on the face by removing them and filtering them.]",
     "fresh": "Enhance This Old Blurry Image Into Ultra High-definition 4k/8k quality.\npreserve The Original Face, Identity, Expression, And All Facial features Exactly As They Are.\ndo Not Alter Or Beautify The Face, Do Not Change Age, Skin Tone, Or Structure.\nsharpen Details, Improve Clarity, Remove Blur, Noise, And Grain while Maintaining Natural Textures.\nrestore Fine Details Like Skin Texture, Hair Strands, Eyes, And Fabric without Over-smoothing.\nimprove Lighting, Contrast, And Dynamic Range Naturally.\nupscale Resolution To Ultra Hd (4k Or 8k) With Crisp Edges And high Detail.\n\n*** Change the background color to cyan. \n\n[Clean up the various spots and irregular marks on the face by removing them and filtering them.]",
