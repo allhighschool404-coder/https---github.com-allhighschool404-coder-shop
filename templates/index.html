@@ -3693,7 +3693,13 @@ The generated output must strictly follow the provided JSON schema. Ensure bangl
                     body: JSON.stringify(payload)
                 });
 
-                const data = await res.json();
+                let data;
+                try {
+                    data = await res.json();
+                } catch (jsonErr) {
+                    throw new Error(`সার্ভার রেসপন্স দিতে ব্যর্থ হয়েছে (Status: ${res.status})। অনুগ্রহ করে কিছুক্ষণ পর আবার চেষ্টা করুন।`);
+                }
+
                 if (!res.ok || data.error) {
                     throw new Error(data.error || 'ছবি প্রসেস করতে ব্যর্থ হয়েছে।');
                 }
@@ -3803,7 +3809,12 @@ The generated output must strictly follow the provided JSON schema. Ensure bangl
                     })
                 });
 
-                const data = await res.json();
+                let data;
+                try {
+                    data = await res.json();
+                } catch (jsonErr) {
+                    throw new Error(`সার্ভার রেসপন্স দিতে ব্যর্থ হয়েছে (Status: ${res.status})।`);
+                }
                 if (!res.ok || data.error) throw new Error(data.error || 'শিট তৈরি করতে ব্যর্থ।');
 
                 peState.sheetB64 = data.sheet_b64;

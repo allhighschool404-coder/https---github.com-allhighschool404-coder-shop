@@ -3,12 +3,14 @@ services:
     name: all-converter
     runtime: python
     plan: free
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt && python -c "import rembg; rembg.new_session('u2netp')"
     startCommand: gunicorn App:app --workers 1 --threads 8 --timeout 300 --bind 0.0.0.0:$PORT
     healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.8
+      - key: REMBG_MODEL
+        value: u2netp
       - key: ADMIN_USER
         sync: false
       - key: ADMIN_PASSWORD

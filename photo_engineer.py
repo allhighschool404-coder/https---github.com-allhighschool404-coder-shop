@@ -11,11 +11,11 @@ _REMBG_SESSION = None
 def get_rembg_session():
     global _REMBG_SESSION
     if _REMBG_SESSION is None:
+        model_name = os.getenv('REMBG_MODEL', 'u2netp')
         try:
             import rembg
-            # 'u2net_human_seg' is the specialized human portrait segmentation model
-            # with pin-sharp precision on hair, ears, badges, and shoulders (~1.5s on CPU)
-            _REMBG_SESSION = rembg.new_session('u2net_human_seg')
+            # 'u2netp' is the lightweight (4.7MB), ultra-fast model ideal for Render free tier (512MB RAM)
+            _REMBG_SESSION = rembg.new_session(model_name)
         except Exception as e:
             try:
                 import rembg
